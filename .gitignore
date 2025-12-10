@@ -2,6 +2,9 @@
 /data/
 /imgs/
 /tests/
+/models/
+/results/Backup/
+/results/images/
 *.zip
 *.zip*
 __MACOSX/
@@ -216,4 +219,3 @@ marimo/_lsp/
 __marimo__/
 
 eval/
-results/images

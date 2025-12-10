@@ -36,19 +36,44 @@ class CTQN(nn.Module):
         )
 
         self.output_head = nn.Linear(embed_dim, 6)
+        self.mem_length = config.get("mem_length", 1)
+
+        if 'pretrained_weights' in kwargs:
+            self.load_state_dict(kwargs['pretrained_weights'])
 
     def reset_memory(self):
         return
 
     def forward(self, x):
-        target_color = x[:, :, 0, 0]
-        x = x - 0.5
-        x = self.vision_module(x)
-        x = torch.cat((x, target_color), dim=1)
-        x = self.input_linear(x).unsqueeze(1)  # Add sequence dim
+        # x: (batch, seq_len, 3, 64, 64)
+        B, T, C, H, W = x.shape
 
-        x = self.transformer(x)
-        x = self.output_head(x[:, -1])
+        # Flatten memory into batch
+        x = x.reshape(B * T, C, H, W)
+
+        # Extract target color (3 dims)
+        target_color = x[:, :, 0, 0]  # shape (B*T, 3)
+
+        # Normalize
+        x = x - 0.5
+        x = self.vision_module(x)  # (B*T, vis_out)
+
+        # Add target color
+        x = torch.cat((x, target_color), dim=1)
+
+        # Embed
+        x = self.input_linear(x)  # (B*T, embed_dim)
+
+        # Reshape back into sequences
+        x = x.reshape(B, T, -1)  # (B, T, embed_dim)
+
+        # Transformer
+        x = self.transformer(x)  # (B, T, embed_dim)
+
+        # Q-values for last token
+        x = x[:, -1]  # (B, embed_dim)
+        x = self.output_head(x)  # (B, 6)
+
         return x
 
 __all__ = ["CTQN"]

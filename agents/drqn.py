@@ -7,61 +7,67 @@ class DRQN(nn.Module):
         super().__init__()
 
         self.vision_module = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=8, stride=4, padding=0),
+            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(32),
+            nn.AvgPool2d(kernel_size=2, stride=2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
-            nn.ReLU(),
-            nn.Flatten()
+            nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(32)
         )
+        
+        self.flatten = nn.Flatten()
 
-        with torch.no_grad():
-            test_input = torch.zeros((1, 3, 64, 64))
-            test_output = self.vision_module(test_input)
+        WIDTH, HEIGHT = 64, 64
+        OUTPUTS = 6
+        linear_input_size = int(WIDTH * HEIGHT * 32 / 4 + 3)  # +3 for the target color input
 
         lstm_hidden_size = kwargs['lstm_hidden_size']
         lstm_num_layers = kwargs['lstm_num_layers']
         dropout = kwargs['dropout']
         device = kwargs['device']
 
-        self.head = nn.LSTM(test_output.shape[1], lstm_hidden_size, lstm_num_layers, batch_first = True, dropout = dropout, device=device)
-        self.lin_out = nn.Linear(lstm_hidden_size, 6)
+        self.head = nn.LSTM(linear_input_size, lstm_hidden_size, lstm_num_layers, batch_first = True, dropout = dropout, device=device)
+        self.lin_out = nn.Linear(lstm_hidden_size, OUTPUTS)
 
         self.lstm_num_layers = lstm_num_layers
         self.lstm_hidden_size = lstm_hidden_size
         self.device = device
 
-        self.prev_hidden = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=device)
-        self.prev_state = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=device)
+        # self.prev_hidden = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=device)
+        # self.prev_state = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=device)
+        # self.soft = nn.Softmax()
         
         if 'pretrained_weights' in kwargs:
-            try:
-                self.load_state_dict(kwargs['pretrained_weights'], strict=False)
-            except RuntimeError as e:
-                # Only load vision
-                pretrained_dict = kwargs['pretrained_weights']
-                model_dict = self.state_dict()
-                pretrained_dict = {k: v for k, v in pretrained_dict.items() if k.startswith('vision_module')}
-                model_dict.update(pretrained_dict)
-                self.load_state_dict(model_dict, strict=False)
+            self.load_state_dict(kwargs['pretrained_weights'])
 
     def reset_memory(self):
         """ resets hidden and cell state to initial parameters, should be called at the start of each episode"""
-        self.prev_hidden = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=self.device)
-        self.prev_state = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=self.device)
+        return
 
     def forward(self, x):
         # extract the 0,0 pixel from each image in the batch as the target color
         # we'll feed this directly to the head to help the network know what to look for
-        x = x - 0.5
-        
-        x = self.vision_module(x)
+        prev_hidden = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=self.device).detach()
+        prev_state = torch.zeros(self.lstm_num_layers, self.lstm_hidden_size, device=self.device).detach()
+        for t in range(x.shape[1]):
+            x_t = x[:, t, :, :, :]
 
-        x, (h, c) = self.head(x, (self.prev_hidden, self.prev_state))
-        self.prev_hidden = h.detach()
-        self.prev_state = c.detach()
-        x = self.lin_out(x)
+            target_color = x_t[:, :, 0, 0]
+            
+            #center the color values around 0 for the cnn
+            x_t = x_t - 0.5
+            
+            x_t = self.vision_module(x_t)
+            x_t = self.flatten(x_t)
+            x_t = torch.cat((x_t, target_color), dim=1)
+
+            x_t, (h, c) = self.head(x_t, (prev_hidden, prev_state))
+            prev_hidden = h.detach()
+            prev_state = c.detach()
+        x = self.lin_out(x_t)
         return x
 
 __all__ = ["DRQN"]

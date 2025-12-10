@@ -37,6 +37,10 @@ SAVE_DIR = './results/images/'
 NUM_STEPS = 1000 
 MODULE = 'memory_maze:MemoryMaze-9x9-v0'
 
+MEMORY_MODEL = False
+MEM_LENGTH = 50
+CLASS_NAME = ""
+
 # Named tuple for storing transitions in the replay buffer
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))            
 
@@ -77,10 +81,12 @@ def load_dqn_class_from_config(config):
     return dqn_class, init_kwargs
 
 
-def select_action(states:torch.Tensor, eps_threshold:float, policy_net:nn.Module, env:gym.vector.AsyncVectorEnv, device:torch.device):
+def select_action(states:torch.Tensor, step:int, policy_net:nn.Module, env:gym.vector.AsyncVectorEnv, device:torch.device):
     sample = torch.rand(states.size(0), device=device)
+    # Decay epsilon from EPS_START to EPS_END over EPS_DECAY steps
+    eps_threshold = EPS_END + (EPS_START - EPS_END) * \
+        np.exp(-1. * step / EPS_DECAY)
     
-    # Decay epsilon from EPS_START to EPS_END over EPS_DECAY steps    
     exploit_mask = sample > eps_threshold
     explore_mask = ~exploit_mask
     
@@ -113,8 +119,8 @@ def optimize_model(memory, policy_net, optimizer, criterion, device):
     
     # Normally, we'd want to mask out non-final states, but in there is no
     # terminal state in memory maze, so all states are non-final.
-    next_states = torch.cat(batch.next_state, dim=0).to(device) #(N, C, H, W)
-    state_batch = torch.cat(batch.state, dim=0).to(device) #(N, C, H, W)
+    next_states = torch.cat(batch.next_state, dim=0).to(device) #(N, C, H, W) or (N, seq_length, C, H, W)
+    state_batch = torch.cat(batch.state, dim=0).to(device) #(N, C, H, W) or (N, seq_length, C, H, W)
     action_batch = torch.stack(batch.action, dim=0).to(device) #(N, 1)
     reward_batch = torch.stack(batch.reward, dim=0).to(device) #(N, 1)
 
@@ -142,9 +148,8 @@ def optimize_model(memory, policy_net, optimizer, criterion, device):
     torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
     optimizer.step()
 
-def train_dqn_agent(envs:gym.vector.AsyncVectorEnv, num_episodes:int, num_steps: int, policy_net, optimizer, criterion, memory:ReplayBuffer, class_name:str, save:str, device, eval=False):
+def train_dqn_agent(envs:gym.vector.AsyncVectorEnv, num_episodes:int, num_steps: int, policy_net, optimizer, criterion, memory:ReplayBuffer, class_name:str, save:str, device):
     reward_array = np.zeros((num_episodes//NUM_ENVS + 1,NUM_ENVS)) # vector to save training rewards over time
-    eval_array = []
     for i_episode in range(1, num_episodes+1, envs.num_envs):
         
         # Now that env is vectorized, observation should be (N, H, W, C)
@@ -152,19 +157,19 @@ def train_dqn_agent(envs:gym.vector.AsyncVectorEnv, num_episodes:int, num_steps:
         policy_net.reset_memory()
 
         states = get_screen(observations, device) # shape is now (N, C, H, W)
+        if MEMORY_MODEL:
+            temp = torch.zeros((states.shape[0], MEM_LENGTH, states.shape[1], states.shape[2], states.shape[3]), device=device) # (N, MEM_LENGTH, C, H, W)
+            states = states.unsqueeze(1) # shape is now (N, t + 1, C, H, W), in this case t + 1 = 1
+            states = torch.cat((temp, states), dim = 1) 
+            states = states[:,-MEM_LENGTH:,:,:,:] # shape is now (N, MEM_LENGTH, C, H, W)
         
         total_rewards = torch.zeros(envs.num_envs, device=device)
         
         
         step_iterator = tqdm(range(num_steps), desc=f"Episode {i_episode}/{num_episodes}")
         for t in step_iterator:
-            if eval:
-                eps_threshold = 0
-            else:
-                eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * i_episode / EPS_DECAY)
             # Select and execute action
-            actions = select_action(states, eps_threshold, policy_net, envs, device)
-            
+            actions = select_action(states, t, policy_net, envs, device)
             #move the action to cpu and convert to numpy before passing to envs.step()
             observations, rewards, terminations, truncations, infos = envs.step(actions.cpu().numpy())
             
@@ -179,6 +184,10 @@ def train_dqn_agent(envs:gym.vector.AsyncVectorEnv, num_episodes:int, num_steps:
             total_rewards += rewards
             
             next_states = get_screen(observations, device)
+            if MEMORY_MODEL:
+                next_states = next_states.unsqueeze(1)
+                next_states = torch.cat((states, next_states), dim = 1) # shape is now (N, t + 2, C, H, W)
+                next_states = next_states[:,-MEM_LENGTH:,:,:,:] # shape is now (N, MEM_LENGTH, C, H, W)
             
             # Store the transitions in memory unbatched
             # these are computed as batch size NUM_ENVS,
@@ -198,16 +207,13 @@ def train_dqn_agent(envs:gym.vector.AsyncVectorEnv, num_episodes:int, num_steps:
 
             step_iterator.set_postfix({'Total Rewards': int(torch.sum(total_rewards))})
         reward_array[i_episode//NUM_ENVS,:] = total_rewards.cpu().numpy() # add rewards for all num_envs to array for visualization in report
-        
-        if eval:
-            return reward_array[i_episode//NUM_ENVS,:]
 
-        if int(i_episode/envs.num_envs) %5 == 0: #evaluate and save results so far every 5 batches
-            print("Evaluating:")
-            eval_rewards = train_dqn_agent(envs, 1, num_steps, policy_net, optimizer, criterion, memory, class_name, save, device, eval=True)
-            eval_array.append((i_episode, np.average(eval_rewards)))
+        if (i_episode - 1) % (NUM_ENVS*4) == 0: #save results intermittently
             try:
-                np.save(f"results/{class_name}_eval_data.npy", np.array(eval_array))
+                if save == 'y':
+                    np.save(f"results/{class_name}_train_data.npy", reward_array)
+                else:
+                    np.save(f"results/{class_name}_eval_data.npy", reward_array)
             except Exception as e:
                 print("could not save to numpy array")
                 print(e)
@@ -226,10 +232,6 @@ def train_dqn_agent(envs:gym.vector.AsyncVectorEnv, num_episodes:int, num_steps:
         print(e)
 
 if __name__ == "__main__":
-    
-    #prevents colab from hanging
-    import multiprocessing
-    multiprocessing.set_start_method('spawn', force=True)
     
     parser = argparse.ArgumentParser(description="DQN agent for Memory Maze environment")
     parser.add_argument('--config', type=str, default=None, help='path to json config')
@@ -267,7 +269,7 @@ if __name__ == "__main__":
         print("Using asynchronous vectorized environment.")
     env = gym.make_vec(config.get('env_name', 'memory_maze:MemoryMaze-9x9-v0'), num_envs=NUM_ENVS, vectorization_mode=vec_mode)
     
-    class_name = config.get('class', "")
+    CLASS_NAME = config.get('class', CLASS_NAME)
     NUM_EPS = config.get('num_episodes', NUM_EPS)
     NUM_STEPS = config.get('num_steps', NUM_STEPS)
     LEARNING_RATE = config.get('learning_rate', 1e-4)
@@ -295,11 +297,38 @@ if __name__ == "__main__":
     print("Loading dqn")
     dqn_class, dqn_init_kwargs = load_dqn_class_from_config(config)
     
-    if class_name == "DRQN":
+    if CLASS_NAME == "DRQN":
+        print("Version: DRQN")
         dqn_init_kwargs['lstm_hidden_size'] = config.get('lstm_hidden_size')
         dqn_init_kwargs['lstm_num_layers'] = config.get('lstm_num_layers')
         dqn_init_kwargs['dropout'] = config.get('dropout')
         dqn_init_kwargs['device'] = device
+        MEMORY_MODEL = True
+        MEM_LENGTH = config.get('mem_length', MEM_LENGTH)
+    elif CLASS_NAME == "GTrXL":
+        print("Version: GTrXL")
+        MEMORY_MODEL = True
+        MEM_LENGTH = config.get('mem_length', MEM_LENGTH)
+        # dqn_init_kwargs['seq_length'] = MEM_LENGTH
+        dqn_init_kwargs['gtrxl_hidden_size'] = config.get('gtrxl_hidden_size')
+        dqn_init_kwargs['num_heads'] = config.get('num_heads')
+        dqn_init_kwargs['trans_num_layers'] = config.get('trans_num_layers')
+        dqn_init_kwargs['gru_num_layers'] = config.get('gru_num_layers')
+        dqn_init_kwargs['embedding_size'] = config.get('embedding_size')
+        dqn_init_kwargs['device'] = device
+    elif CLASS_NAME == "CTQN":
+        print("Version: CTQN")
+        MEMORY_MODEL = True
+        MEM_LENGTH = config.get('mem_length', MEM_LENGTH)
+
+        # Transformer hyperparameters
+        dqn_init_kwargs['transformer_hidden_size'] = config.get('transformer_hidden_size')
+        dqn_init_kwargs['transformer_num_layers'] = config.get('transformer_num_layers')
+        dqn_init_kwargs['transformer_num_heads'] = config.get('transformer_num_heads')
+        dqn_init_kwargs['transformer_dropout'] = config.get('transformer_dropout')
+
+        dqn_init_kwargs['device'] = device
+        
     
     # load weights if they exist
     weight_path = config.get('pretrained_weights_path')
@@ -326,12 +355,12 @@ if __name__ == "__main__":
         print("Beginning Training")
         num_eps_for_mode = NUM_EPS
     try:
-        train_dqn_agent(env, num_eps_for_mode, NUM_STEPS, policy_net, optimizer, criterion, memory, class_name, save, device)
+        train_dqn_agent(env, num_eps_for_mode, NUM_STEPS, policy_net, optimizer, criterion, memory, CLASS_NAME, save, device)
     except KeyboardInterrupt:
         print("Training interrupted by user.")
         save = input("Save the trained model? (y/n): ").strip().lower()
     finally:
-        if save == 'y':
+        if save != 'n':
             #save the trained model
             os.makedirs(args.output_dir, exist_ok=True)
             model_path = os.path.join(args.output_dir, f"{config.get('class', 'dqn_model')}.pth")

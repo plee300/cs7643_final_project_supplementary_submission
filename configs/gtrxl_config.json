@@ -1,0 +1,25 @@
+{
+  "module": "agents.GTrXL",
+  "class": "GTrXL",
+  "init_kwargs": {},
+  "num_environments": 6,
+  "num_steps": 1000,
+  "batch_size": 8,
+  "env_name": "memory_maze:MemoryMaze-9x9-v0",
+  "num_episodes": 2000,
+  "learning_rate": 0.0001,
+  "eps_start": 0.9,
+  "eps_end": 0.05,
+  "eps_decay": 200,
+  "gamma": 0.999,
+  "buffer_capacity": 1400,
+  "criterion": "smooth_l1",
+  "pretrained_weights_path": "models/GTrXL.pth",
+
+  "mem_length": 25,
+  "gtrxl_hidden_size": 256,
+  "num_heads": 2,
+  "trans_num_layers": 2,
+  "gru_num_layers": 1,
+  "embedding_size": 800
+}
