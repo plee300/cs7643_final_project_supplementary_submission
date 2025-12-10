@@ -1,0 +1,5 @@
+gymnasium
+pygame
+pillow
+imageio
+imageio-ffmpeg

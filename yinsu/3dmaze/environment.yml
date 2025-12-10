@@ -1,0 +1,79 @@
+name: 3dmaze
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Core Python
+  - python=3.11  # Required for compatibility with memory-maze and labmaze
+
+  # Scientific Computing
+  - numpy
+  - matplotlib
+  - tqdm
+
+  # Configuration & Data
+  - pyyaml
+
+  # Computer Vision
+  - opencv
+
+  # Development Tools
+  - jupyter
+  - tensorboard
+
+  # Package Manager
+  - pip>=23.0
+  - setuptools
+
+  # Pip Dependencies
+  - pip:
+      # Deep Learning - installed separately for GPU support
+      # After creating environment, run: pip3 install torch torchvision torchaudio
+
+      # Reinforcement Learning
+      - gymnasium>=0.29.0
+      - stable-baselines3>=2.0.0
+
+      # RL Environments
+      - memory-maze
+
+      # Legacy gym support (if needed)
+      - gym
+
+      # Rendering & Visualization
+      - pygame
+      - pillow
+      - imageio
+      - imageio-ffmpeg  # For video recording
+
+      # Jupyter Extensions
+      - notebook
+
+# Installation:
+#   conda env create -f environment.yml
+#
+# Activation:
+#   conda activate 3dmaze
+#
+# Install PyTorch (auto-detects CUDA):
+#   pip3 install torch torchvision torchaudio
+#
+# Install remaining packages:
+#   pip install gymnasium gym memory-maze stable-baselines3 pygame pillow imageio imageio-ffmpeg notebook
+#
+# Verify GPU is available:
+#   python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+#
+# Verify all packages:
+#   python -c "import gym, gymnasium, memory_maze, stable_baselines3; print('All packages installed!')"
+#
+# Update environment:
+#   conda env update -f environment.yml --prune
+#
+# Export exact versions:
+#   conda env export > environment_lock.yml
+# pip install numpy==1.23.5
+# pip install "scipy<1.11.0"
+# pip install gym==0.23.1
